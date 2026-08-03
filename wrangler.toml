@@ -1,10 +1,10 @@
-name = "referralform-mailer-api"
+name = "careplasma-mailer-api"
 main = "src/index.js"
 compatibility_date = "2025-07-18"
 
 [vars]
 ALLOWED_ORIGIN = "*"
-MAIL_TO = "venkatrx1@gmail.com, fannininfusionrx@gmail.com, prchalla@gmail.com, +19034305128@fax.plus"
+MAIL_TO = "venkatrx1@gmail.com, info@careplasma.com"
 
 [observability.logs]
 enabled = true

@@ -1,33 +1,29 @@
 /**
  * CarePlasma — Website Form Mailer
  * ---------------------------------------------------------------------------
- * A small Cloudflare Worker that receives POSTs from the "Get In Touch",
- * "Choose Center", and "Careers" forms on the CarePlasma website and relays
- * each one as an email to TO_EMAIL — no third-party form SaaS, no server to
- * maintain. The Careers form may also include a resume file, which is
- * forwarded as an email attachment.
+ * A Cloudflare Worker that receives POSTs from the "Get In Touch", "Choose
+ * Center", and "Careers" forms on the CarePlasma website and relays each one
+ * as an email through the Gmail API — the same OAuth2 pattern used by the
+ * sibling bloomsphere-mailer-api / referralform-mailer-api Workers. The
+ * Careers form's resume upload is forwarded as a MIME email attachment.
  *
  * Required setup (see README.md for full steps):
- *   - Secret:      RESEND_API_KEY   (from https://resend.com — free tier)
- *   - Variable:    TO_EMAIL         (comma-separated list of inboxes to receive submissions)
- *   - Variable:    FROM_EMAIL       (optional; defaults to onboarding@resend.dev
- *                                    until you verify your own domain in Resend)
- *   - Variable:    ALLOWED_ORIGIN   (your site's origin, for CORS lock-down)
+ *   - Secrets:  GMAIL_USER, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN
+ *   - Variable: MAIL_TO         (comma-separated recipient address(es))
+ *   - Variable: ALLOWED_ORIGIN  (your site's origin, for CORS lock-down)
  * ---------------------------------------------------------------------------
  */
 
-const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024; // 8MB — comfortably under Resend's request size limit
+const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024; // 8MB
 
 export default {
   async fetch(request, env) {
-    const allowedOrigin = env.ALLOWED_ORIGIN || "*";
     const corsHeaders = {
-      "Access-Control-Allow-Origin": allowedOrigin,
+      "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Accept",
     };
 
-    // Preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
     }
@@ -43,11 +39,9 @@ export default {
       return jsonResponse({ success: false, message: "Could not read form data." }, 400, corsHeaders);
     }
 
-    // Honeypot: matches Website A's convention exactly. Bots that fill in
-    // every field will populate this hidden field; humans never see it.
+    // Honeypot: bots fill every field, real users leave this blank.
     const honeypot = (formData.get("_honey") || "").toString().trim();
     if (honeypot) {
-      // Pretend success so the bot doesn't learn anything, but don't send an email.
       return jsonResponse({ success: true, message: "Thanks!" }, 200, corsHeaders);
     }
 
@@ -69,30 +63,19 @@ export default {
       return jsonResponse({ success: false, message: "Resume file is too large (8MB max)." }, 400, corsHeaders);
     }
 
-    if (!env.RESEND_API_KEY) {
+    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN || !env.GMAIL_USER) {
       return jsonResponse(
-        { success: false, message: "Server is not configured to send email yet (missing RESEND_API_KEY)." },
+        { success: false, message: "Server is not configured to send email yet (missing Gmail API credentials)." },
         500,
         corsHeaders
       );
     }
-    if (!env.TO_EMAIL) {
+    if (!env.MAIL_TO) {
       return jsonResponse(
-        { success: false, message: "Server is not configured with a recipient (missing TO_EMAIL)." },
+        { success: false, message: "Server is not configured with a recipient (missing MAIL_TO)." },
         500,
         corsHeaders
       );
-    }
-
-    const fromAddress = env.FROM_EMAIL || "onboarding@resend.dev";
-    const toAddresses = env.TO_EMAIL.split(",").map((addr) => addr.trim()).filter(Boolean);
-
-    const attachments = [];
-    if (hasResume) {
-      attachments.push({
-        filename: resume.name || "resume",
-        content: arrayBufferToBase64(await resume.arrayBuffer()),
-      });
     }
 
     const htmlBody = `
@@ -103,28 +86,41 @@ export default {
       ${topic ? `<p><strong>Subject:</strong> ${escapeHtml(topic)}</p>` : ""}
       <p><strong>Message:</strong></p>
       <p>${escapeHtml(message).replace(/\n/g, "<br>") || "(no message)"}</p>
-      ${hasResume ? `<p><strong>Attachment:</strong> ${escapeHtml(attachments[0].filename)}</p>` : ""}
+      ${hasResume ? `<p><strong>Attachment:</strong> ${escapeHtml(resume.name || "resume")}</p>` : ""}
     `;
 
     try {
-      const resendResponse = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${env.RESEND_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: `${fromName} <${fromAddress}>`,
-          to: toAddresses,
-          reply_to: email,
-          subject: emailSubject,
-          html: htmlBody,
-          ...(attachments.length ? { attachments } : {}),
-        }),
+      const accessToken = await getAccessToken(env);
+
+      const attachment = hasResume
+        ? {
+            filename: resume.name || "resume",
+            contentType: resume.type || "application/octet-stream",
+            content: arrayBufferToBase64(await resume.arrayBuffer()),
+          }
+        : null;
+
+      const raw = buildMimeMessage({
+        fromName,
+        fromAddress: env.GMAIL_USER,
+        to: env.MAIL_TO,
+        replyTo: email,
+        subject: emailSubject,
+        html: htmlBody,
+        attachment,
       });
 
-      if (!resendResponse.ok) {
-        const errText = await resendResponse.text();
+      const sendResponse = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ raw }),
+      });
+
+      if (!sendResponse.ok) {
+        const errText = await sendResponse.text();
         return jsonResponse(
           { success: false, message: "Email provider rejected the message.", detail: errText },
           502,
@@ -139,11 +135,64 @@ export default {
   },
 };
 
-function jsonResponse(body, status, extraHeaders) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json", ...extraHeaders },
+async function getAccessToken(env) {
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      refresh_token: env.GOOGLE_REFRESH_TOKEN,
+      grant_type: "refresh_token",
+    }),
   });
+
+  if (!res.ok) {
+    throw new Error(`Token refresh failed (${res.status}): ${await res.text()}`);
+  }
+
+  const data = await res.json();
+  return data.access_token;
+}
+
+function buildMimeMessage({ fromName, fromAddress, to, replyTo, subject, html, attachment }) {
+  const toList = to.split(",").map((addr) => addr.trim()).filter(Boolean).join(", ");
+  const headers =
+    `From: ${sanitizeHeader(fromName)} <${fromAddress}>\r\n` +
+    `To: ${toList}\r\n` +
+    `Reply-To: ${sanitizeHeader(replyTo)}\r\n` +
+    `Subject: ${sanitizeHeader(subject)}\r\n` +
+    `MIME-Version: 1.0\r\n`;
+
+  if (!attachment) {
+    const message = `${headers}Content-Type: text/html; charset=UTF-8\r\n\r\n${html}`;
+    return base64UrlEncode(message);
+  }
+
+  const boundary = "careplasma-" + crypto.randomUUID();
+  const message =
+    `${headers}Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Type: text/html; charset=UTF-8\r\n\r\n` +
+    `${html}\r\n\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Type: ${attachment.contentType}; name="${attachment.filename}"\r\n` +
+    `Content-Disposition: attachment; filename="${attachment.filename}"\r\n` +
+    `Content-Transfer-Encoding: base64\r\n\r\n` +
+    `${wrapBase64(attachment.content)}\r\n` +
+    `--${boundary}--`;
+  return base64UrlEncode(message);
+}
+
+function wrapBase64(base64) {
+  return base64.replace(/(.{76})/g, "$1\r\n");
+}
+
+function base64UrlEncode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function arrayBufferToBase64(buffer) {
@@ -154,6 +203,17 @@ function arrayBufferToBase64(buffer) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+function jsonResponse(body, status, extraHeaders) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...extraHeaders },
+  });
+}
+
+function sanitizeHeader(str) {
+  return String(str).replace(/[\r\n]+/g, " ");
 }
 
 function escapeHtml(str) {

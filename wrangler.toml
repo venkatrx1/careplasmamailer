@@ -3,15 +3,11 @@ main = "index.js"
 compatibility_date = "2025-07-18"
 
 # Plain (non-secret) variables — safe to commit.
-# Set RESEND_API_KEY separately as a secret (see README.md); never put it here.
-# NOTE: if this Worker is deployed as a Cloudflare Pages project via Git
-# integration rather than `wrangler deploy`/`wrangler pages deploy`, these vars
-# and the RESEND_API_KEY secret must instead be set in the Pages project's
-# dashboard under Settings > Environment variables — this file isn't read there.
+# Set GMAIL_USER / GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN
+# separately as secrets via `wrangler secret put` (see README.md); never put them here.
 [vars]
 ALLOWED_ORIGIN = "*"
-TO_EMAIL = "venkatrx1@gmail.com, info@careplasma.com"
-FROM_EMAIL = "onboarding@resend.dev"
+MAIL_TO = "info@careplasma.com, venkatrx1@gmail.com"
 
 [observability.logs]
 enabled = true

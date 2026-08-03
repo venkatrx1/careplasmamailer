@@ -2,51 +2,94 @@
 
 A Cloudflare Worker that receives the "Get In Touch," "Choose Center," and
 "Careers" form submissions from the [careplasma](https://github.com/venkatrx1/careplasma)
-website and relays each one as an email via [Resend](https://resend.com) — no
-third-party form SaaS, no server to maintain. The Careers form's resume
-upload is forwarded as an email attachment.
+website and relays each one by email through the Gmail API — the same OAuth2
+pattern used by the sibling `bloomsphere-mailer-api` / `referralform-mailer-api`
+Workers. The Careers form's resume upload is forwarded as a MIME email
+attachment.
 
-This project is deployed as a Cloudflare Pages project
-(`careplasmamailer.pages.dev`) using `_worker.js` at the repo root, which
-Cloudflare Pages runs in place of its usual static-asset serving ("Advanced
-Mode"). `_worker.js` just re-exports the handler in `index.js`, so the same
-code also works with a plain `wrangler deploy` Workers deployment.
+Deployed at `https://careplasma-mailer-api.venkatrx1.workers.dev` via
+`wrangler deploy` (a plain Cloudflare Worker, not Cloudflare Pages).
 
 ## How it works
 
-- Each form POSTs as `multipart/form-data` to this project's URL.
+- Each form POSTs as `multipart/form-data` to this Worker's URL.
 - The Worker checks a honeypot field, reads the standard fields (`name`,
   `email`, `phone`, `subject`, `message`) plus an optional `resume` file, and
-  relays it as an HTML email through the Resend API.
+  sends it through the Gmail API (`gmail.googleapis.com`), authenticated with
+  an OAuth2 refresh token (no passwords, no third-party relay).
+
+## Prerequisites
+
+- Node.js and npm
+- A Cloudflare account (free tier is sufficient)
+- A Google Cloud project with the Gmail API enabled, and OAuth2 credentials
+  (client ID/secret) with a refresh token authorized for
+  `https://www.googleapis.com/auth/gmail.send` on the sending Gmail account.
+  If you already set this up for `bloomsphere-mailer-api` or
+  `referralform-mailer-api`, the same `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
+  (and `GOOGLE_REFRESH_TOKEN`/`GMAIL_USER`, if sending from the same mailbox)
+  can be reused here — no need to redo the OAuth consent flow.
 
 ## Setup
 
 1. `npm install`
-2. Create a Resend account and API key (free tier is sufficient).
-3. Configure environment variables — **where** depends on how this project is
-   deployed:
-   - **Cloudflare Pages via Git integration** (the current setup): set these
-     in the Pages project's dashboard under Settings → Environment variables.
-     `wrangler.toml` is not read in this flow.
-   - **`wrangler deploy` / `wrangler pages deploy`**: `TO_EMAIL`,
-     `FROM_EMAIL`, and `ALLOWED_ORIGIN` can stay in [wrangler.toml](wrangler.toml);
-     set the secret with `npx wrangler secret put RESEND_API_KEY`.
-
-   | Name              | Type   | Purpose                                                  |
-   | ----------------- | ------ | --------------------------------------------------------- |
-   | `RESEND_API_KEY`  | secret | Resend API key                                             |
-   | `TO_EMAIL`        | var    | Comma-separated recipient address(es)                      |
-   | `FROM_EMAIL`      | var    | Optional; defaults to `onboarding@resend.dev` until you verify your own sending domain in Resend |
-   | `ALLOWED_ORIGIN`  | var    | Your site's origin, for CORS lock-down (`*` allows any origin) |
-
-4. Deploy — either push to the branch connected to the Cloudflare Pages
-   project, or run `npx wrangler deploy` for a plain Workers deployment.
+2. `npx wrangler login` — authenticates the CLI with your Cloudflare account.
+3. Set the required secrets:
+   - `npx wrangler secret put GMAIL_USER` — the sending Gmail address.
+   - `npx wrangler secret put GOOGLE_CLIENT_ID`
+   - `npx wrangler secret put GOOGLE_CLIENT_SECRET`
+   - `npx wrangler secret put GOOGLE_REFRESH_TOKEN`
+4. Edit [wrangler.toml](wrangler.toml) if needed:
+   - `ALLOWED_ORIGIN` — the site origin allowed to call this Worker.
+   - `MAIL_TO` — comma-separated recipient address(es).
+5. `npx wrangler deploy` — deploys the Worker and prints its live URL.
 
 ## Local development
 
 - `npx wrangler dev` — runs the Worker locally for iteration.
 - `npx wrangler tail` — streams live logs from the deployed Worker; run this
   while submitting a real form to debug failures.
+
+## Frontend integration
+
+Each form POSTs as `multipart/form-data` to this Worker's URL. Recognized
+fields:
+
+| Field         | Purpose                                                        |
+| ------------- | --------------------------------------------------------------- |
+| `name`        | Sender's name, included in the email body                       |
+| `email`       | Sender's email, used as `Reply-To` and included in the body      |
+| `phone`       | Sender's phone, included in the email body                       |
+| `subject`     | User-entered topic (Get In Touch form only), shown in the body   |
+| `message`     | Message body                                                     |
+| `resume`      | Optional file (Careers form) — forwarded as an email attachment, 8MB max |
+| `_subject`    | Email `Subject` header (defaults to "New contact form submission") |
+| `_from_name`  | Display name used in the `From` header (defaults to "CarePlasma Website") |
+| `_honey`      | Honeypot — must stay empty; leave the input hidden via CSS       |
+
+## Configuration reference
+
+| Name                    | Type   | Set via                | Purpose                                              |
+| ----------------------- | ------ | ------------------------ | ----------------------------------------------------- |
+| `ALLOWED_ORIGIN`        | var    | `wrangler.toml`          | Origin allowed to call the Worker (CORS lock-down)     |
+| `MAIL_TO`               | var    | `wrangler.toml`          | Comma-separated recipient address(es)                  |
+| `GMAIL_USER`            | secret | `wrangler secret put`    | Gmail address used as sender identity (`From`)         |
+| `GOOGLE_CLIENT_ID`      | secret | `wrangler secret put`    | OAuth2 client ID for the Gmail API                     |
+| `GOOGLE_CLIENT_SECRET`  | secret | `wrangler secret put`    | OAuth2 client secret for the Gmail API                 |
+| `GOOGLE_REFRESH_TOKEN`  | secret | `wrangler secret put`    | OAuth2 refresh token used to mint access tokens         |
+
+Secrets are stored encrypted by Cloudflare and never appear in source control.
+
+## Testing
+
+1. `npx wrangler dev` to run locally, or deploy and use the live URL.
+2. Submit one of the CarePlasma site's forms, or `curl`/Postman a
+   `multipart/form-data` POST with a few fields, to the Worker URL.
+3. Confirm the JSON response is `{"success": true, "message": "Message sent."}`.
+4. Confirm an email arrives at each `MAIL_TO` address with the submitted
+   fields, and with the resume attached if the Careers form was used.
+5. Run `npx wrangler tail` while testing to see logs and catch any Gmail API
+   or token-refresh errors immediately.
 
 ## Security notes
 

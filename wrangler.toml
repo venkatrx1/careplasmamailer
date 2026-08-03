@@ -1,10 +1,17 @@
 name = "careplasma-mailer-api"
-main = "src/index.js"
+main = "index.js"
 compatibility_date = "2025-07-18"
 
+# Plain (non-secret) variables — safe to commit.
+# Set RESEND_API_KEY separately as a secret (see README.md); never put it here.
+# NOTE: if this Worker is deployed as a Cloudflare Pages project via Git
+# integration rather than `wrangler deploy`/`wrangler pages deploy`, these vars
+# and the RESEND_API_KEY secret must instead be set in the Pages project's
+# dashboard under Settings > Environment variables — this file isn't read there.
 [vars]
 ALLOWED_ORIGIN = "*"
-MAIL_TO = "venkatrx1@gmail.com, info@careplasma.com"
+TO_EMAIL = "venkatrx1@gmail.com, info@careplasma.com"
+FROM_EMAIL = "onboarding@resend.dev"
 
 [observability.logs]
 enabled = true

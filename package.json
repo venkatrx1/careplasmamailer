@@ -1,5 +1,5 @@
 {
-  "name": "referral-form-mailer",
+  "name": "careplasma-mailer",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",

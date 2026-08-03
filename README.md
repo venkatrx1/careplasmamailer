@@ -1,45 +1,46 @@
-# Referral Form Mailer.
+# CarePlasma Mailer
 
-A Cloudflare Worker that receives the "New Patient Form" submission from the
-[ReferralForm](https://github.com/venkatrx1/ReferralForm) GitHub Pages site and
-relays it by email through the practice's own Gmail mailbox — replacing the
-previous third-party relay (formsubmit.co).
+A Cloudflare Worker that receives the "Get In Touch," "Choose Center," and
+"Careers" form submissions from the [careplasma](https://github.com/venkatrx1/careplasma)
+website and relays each one as an email via [Resend](https://resend.com) — no
+third-party form SaaS, no server to maintain. The Careers form's resume
+upload is forwarded as an email attachment.
+
+This project is deployed as a Cloudflare Pages project
+(`careplasmamailer.pages.dev`) using `_worker.js` at the repo root, which
+Cloudflare Pages runs in place of its usual static-asset serving ("Advanced
+Mode"). `_worker.js` just re-exports the handler in `index.js`, so the same
+code also works with a plain `wrangler deploy` Workers deployment.
 
 ## How it works
 
-- The static form POSTs as `multipart/form-data` to this Worker's URL.
-- The Worker checks the request `Origin`, checks a honeypot field, builds an
-  HTML table from the submitted fields, and sends it via Gmail's SMTP server
-  (`smtp.gmail.com:465`) using `nodemailer`, authenticated with a Gmail App
-  Password.
-- No third party other than Cloudflare (runs the code) and Google (the
-  mailbox you already use) ever sees the form contents.
-
-## Prerequisites
-
-- Node.js and npm
-- A Cloudflare account (free tier is sufficient)
-- 2-Step Verification enabled on the sending Gmail account, so you can create
-  an App Password
+- Each form POSTs as `multipart/form-data` to this project's URL.
+- The Worker checks a honeypot field, reads the standard fields (`name`,
+  `email`, `phone`, `subject`, `message`) plus an optional `resume` file, and
+  relays it as an HTML email through the Resend API.
 
 ## Setup
 
 1. `npm install`
-2. Create a Gmail App Password: Google Account → Security → 2-Step
-   Verification (enable if needed) → App passwords → create one (e.g. name it
-   "Referral Form Mailer") → copy the 16-character password.
-3. `npx wrangler login` — authenticates the CLI with your Cloudflare account.
-4. `npx wrangler secret put GMAIL_USER` — paste the sending Gmail address.
-5. `npx wrangler secret put GMAIL_APP_PASSWORD` — paste the App Password from
-   step 2.
-6. Edit [wrangler.toml](wrangler.toml):
-   - `ALLOWED_ORIGIN` — the GitHub Pages origin allowed to call this Worker
-     (e.g. `https://venkatrx1.github.io`).
-   - `MAIL_TO` — comma-separated recipient address(es). Can include the
-     sending address itself plus any other recipients.
-7. `npx wrangler deploy` — deploys the Worker and prints its live URL.
-8. Paste that URL into `FORM_ENDPOINT` near the top of `script.js` in the
-   ReferralForm project, then commit and push.
+2. Create a Resend account and API key (free tier is sufficient).
+3. Configure environment variables — **where** depends on how this project is
+   deployed:
+   - **Cloudflare Pages via Git integration** (the current setup): set these
+     in the Pages project's dashboard under Settings → Environment variables.
+     `wrangler.toml` is not read in this flow.
+   - **`wrangler deploy` / `wrangler pages deploy`**: `TO_EMAIL`,
+     `FROM_EMAIL`, and `ALLOWED_ORIGIN` can stay in [wrangler.toml](wrangler.toml);
+     set the secret with `npx wrangler secret put RESEND_API_KEY`.
+
+   | Name              | Type   | Purpose                                                  |
+   | ----------------- | ------ | --------------------------------------------------------- |
+   | `RESEND_API_KEY`  | secret | Resend API key                                             |
+   | `TO_EMAIL`        | var    | Comma-separated recipient address(es)                      |
+   | `FROM_EMAIL`      | var    | Optional; defaults to `onboarding@resend.dev` until you verify your own sending domain in Resend |
+   | `ALLOWED_ORIGIN`  | var    | Your site's origin, for CORS lock-down (`*` allows any origin) |
+
+4. Deploy — either push to the branch connected to the Cloudflare Pages
+   project, or run `npx wrangler deploy` for a plain Workers deployment.
 
 ## Local development
 
@@ -47,28 +48,10 @@ previous third-party relay (formsubmit.co).
 - `npx wrangler tail` — streams live logs from the deployed Worker; run this
   while submitting a real form to debug failures.
 
-## Configuration reference
-
-| Name                 | Type   | Set via                    | Purpose                                              |
-| -------------------- | ------ | --------------------------- | ----------------------------------------------------- |
-| `ALLOWED_ORIGIN`     | var    | `wrangler.toml`             | Origin allowed to call the Worker (CORS + basic check) |
-| `MAIL_TO`            | var    | `wrangler.toml`             | Comma-separated recipient address(es)                 |
-| `GMAIL_USER`         | secret | `wrangler secret put`       | Gmail address used as SMTP login and `From` address   |
-| `GMAIL_APP_PASSWORD` | secret | `wrangler secret put`       | Gmail App Password (requires 2-Step Verification)     |
-
-Secrets are stored encrypted by Cloudflare and never appear in source control.
-
 ## Security notes
 
-- The `Origin` check blocks ordinary cross-site browser calls but is **not** a
-  strong access control — a non-browser client could spoof the header. If the
-  endpoint attracts spam or abuse once its URL is visible in the public form's
-  JS, add [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/)
-  to the form and verify it server-side here.
 - The honeypot field (`_honey`) silently no-ops the request when filled, to
   deter simple bots without tipping them off.
-- This setup removes formsubmit.co from the data path, but Google itself is
-  not BAA-covered on a free/personal Gmail account. If the form collects data
-  that counts as PHI under HIPAA, a Google Workspace account with a signed BAA
-  is required for full compliance — confirm with whoever owns that risk for
-  the practice.
+- `ALLOWED_ORIGIN` is set to `*` by default. Lock it down to the site's real
+  origin once everything is verified working, to reduce the chance of the
+  endpoint being used to relay spam from other sites.

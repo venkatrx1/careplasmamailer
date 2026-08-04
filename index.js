@@ -158,10 +158,10 @@ async function getAccessToken(env) {
 function buildMimeMessage({ fromName, fromAddress, to, replyTo, subject, html, attachment }) {
   const toList = to.split(",").map((addr) => addr.trim()).filter(Boolean).join(", ");
   const headers =
-    `From: ${sanitizeHeader(fromName)} <${fromAddress}>\r\n` +
+    `From: ${encodeHeaderValue(fromName)} <${fromAddress}>\r\n` +
     `To: ${toList}\r\n` +
     `Reply-To: ${sanitizeHeader(replyTo)}\r\n` +
-    `Subject: ${sanitizeHeader(subject)}\r\n` +
+    `Subject: ${encodeHeaderValue(subject)}\r\n` +
     `MIME-Version: 1.0\r\n`;
 
   if (!attachment) {
@@ -214,6 +214,18 @@ function jsonResponse(body, status, extraHeaders) {
 
 function sanitizeHeader(str) {
   return String(str).replace(/[\r\n]+/g, " ");
+}
+
+// RFC 2047 "encoded word" — header values (Subject, From display name) are
+// restricted to ASCII; embedding raw UTF-8 bytes (e.g. an em dash) makes
+// Gmail read each byte as Latin-1, producing mojibake like "Ã¢Â€Â”".
+function encodeHeaderValue(str) {
+  const sanitized = sanitizeHeader(str);
+  if (/^[\x00-\x7F]*$/.test(sanitized)) return sanitized;
+  const bytes = new TextEncoder().encode(sanitized);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return `=?UTF-8?B?${btoa(binary)}?=`;
 }
 
 function escapeHtml(str) {
